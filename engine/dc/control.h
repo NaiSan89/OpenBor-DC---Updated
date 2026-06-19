@@ -102,7 +102,7 @@ void control_update(s_playercontrols ** playercontrols, int numplayers);
 void control_rumble(int port, int msec);
 unsigned long getPad(int port);
 
-int dcpad_rumblepower[4];
+extern int dcpad_rumblepower[4];
 
 #endif
 

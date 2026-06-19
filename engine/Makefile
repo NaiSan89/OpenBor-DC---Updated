@@ -222,11 +222,11 @@ TARGET 	        = $(VERSION_NAME).elf
 TARGET_FINAL    = $(VERSION_NAME).bin
 TARGET_PLATFORM = DC
 BUILDING        = 1
-INCLUDES        = $(KOS_BASE)/../kos-ports/include/SDL \
+INCLUDES        = $(KOS_BASE)/../kos-ports/SDL/build/SDL-1.2.15/include \
                   $(KOS_BASE)/../kos-ports/include/png \
                   $(KOS_BASE)/../kos-ports/include/zlib \
                   $(KOS_BASE)/../kos-ports/include/ogg \
-				  $(KOS_BASE)/../kos-ports/include/vorbis/include
+				  $(KOS_BASE)/../kos-ports/libtremor/inst/include
 ifeq ($(BUILD_DC), 0)
 BUILD_DEBUG     = 1
 endif
@@ -506,7 +506,7 @@ OBJS            = $(MAIN)                                                       
 #----------------------------------------------------------------------------------------------------
 
 CFLAGS 	       += $(addprefix -I", $(addsuffix ", $(INCS))) $(ARCHFLAGS) -D$(TARGET_PLATFORM)
-CFLAGS 	       += -g -Wall -Werror -fsigned-char
+CFLAGS 	       += -g -Wall -Werror -fsigned-char -std=gnu89 -Dstricmp=strcasecmp -Dstrnicmp=strncasecmp
 
 ifndef BUILD_GP2X
 ifndef BUILD_DARWIN
@@ -667,7 +667,7 @@ endif
 
 
 ifdef BUILD_DC
-LIBS           += -lSDL -ltremor
+LIBS           += -L$(KOS_BASE)/../kos-ports/SDL/build/SDL-1.2.15 -L$(KOS_BASE)/../kos-ports/libtremor/inst/lib -lSDL -ltremor
 endif
 
 

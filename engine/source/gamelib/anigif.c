@@ -410,7 +410,7 @@ int anigif_open(char *filename, char *packfilename, anigif_info *info)
     memset(info, 0, sizeof(anigif_info));
     info->isRGB = (pixelformat == PIXEL_x8);
     strcpy(tname, filename);
-    if(stricmp(tname + strlen(tname) - 4, ".gif") == 0)
+    if(strcasecmp(tname + strlen(tname) - 4, ".gif") == 0)
     {
         tname[strlen(tname) - 4] = 0;
     }

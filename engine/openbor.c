@@ -55,6 +55,9 @@ s_videomodes        videomodes;
 int sprite_map_max_items = 0;
 int cache_map_max_items = 0;
 
+s_anim_list *anim_list = NULL;
+s_modelcache *model_cache = NULL;
+
 int startup_done = 0; // startup is only called when a game is loaded. so when exitting from the menu we need a way to figure out which resources to free.
 List *modelcmdlist = NULL;
 List *modelstxtcmdlist = NULL;
@@ -12133,7 +12136,7 @@ static void addwall(float x, float z, float x1, float x2, float x3, float x4, fl
 
 void load_level(char *filename)
 {
-    char *buf;
+    char *buf = NULL;
     size_t size, len, sblen;
     ptrdiff_t pos, oldpos;
     char *command;
@@ -17643,7 +17646,7 @@ void common_dot()
     entity     *eOpp;       //Owner of dot effect.
     s_attack    attack;     //Attack struct.
 
-    for(iIndex = 0; iIndex <= MAX_DOTS; iIndex++)                                               //Loop through all DOT indexes.
+    for(iIndex = 0; iIndex < MAX_DOTS; iIndex++)                                               //Loop through all DOT indexes.
     {
         iDot_time   =   self->dot_time[iIndex];                                                 //Get expire time.
         iDot_cnt    =   self->dot_cnt[iIndex];                                                  //Get next tick time.
@@ -24192,9 +24195,9 @@ void didfind_item(entity *other)
         if(self->weapent && self->weapent->modeldata.typeshot)
         {
             self->weapent->modeldata.shootnum += other->modeldata.reload;
-            if(self->weapent->modeldata.shootnum > self->weapent->modeldata.shootnum)
+            if(self->weapent->modeldata.shootnum > self->weapent->model->shootnum)
             {
-                self->weapent->modeldata.shootnum = self->weapent->modeldata.shootnum;
+                self->weapent->modeldata.shootnum = self->weapent->model->shootnum;
             }
             if(SAMPLE_GET >= 0)
             {

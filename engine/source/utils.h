@@ -36,7 +36,7 @@ typedef struct
 {
     char filename[80];
 } s_filelist;
-s_filelist paklist[20];
+extern s_filelist paklist[20];
 
 int findmods(void);
 #endif

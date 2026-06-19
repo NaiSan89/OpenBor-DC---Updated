@@ -825,6 +825,8 @@ typedef enum
 #endif
 
 //string starts with constant, for animation# series
+#define strnicmp strncasecmp
+#define stricmp strcasecmp
 #define strclen(s) (sizeof(s)-1)
 #define starts_with(a, b) (strnicmp(a, b, strclen(b))==0)
 #define starts_with_num(a, b) (starts_with(a, b) && (!a[strclen(b)] || (a[strclen(b)] >= '1' && a[strclen(b)] <= '9')))
@@ -939,10 +941,11 @@ if(n<1) n = 1;
 		 !inair(self) && \
 		 diff(other->position.y, self->position.y) <= 0.1)
 
-#define unfrozen(e) \
+#define unfrozen(e) do {\
 		ent_set_colourmap(e, e->map);\
 		e->frozen = 0;\
-		e->freezetime = 0;
+		e->freezetime = 0;\
+	} while(0)
 
 #define validanim(e, a) ((e)->modeldata.animation[a]&&(e)->modeldata.animation[a]->numframes)
 
@@ -1375,7 +1378,7 @@ struct animlist
     struct animlist *next;
 };
 typedef struct animlist s_anim_list;
-s_anim_list *anim_list;
+extern s_anim_list *anim_list;
 
 typedef struct
 {
@@ -1708,7 +1711,7 @@ typedef struct
     int loadflag;
     int selectable;
 } s_modelcache;
-s_modelcache *model_cache;
+extern s_modelcache *model_cache;
 
 typedef struct
 {

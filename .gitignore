@@ -57,3 +57,5 @@ engine/OpenBOR.bin
 engine/resources/Info.plist
 engine/resources/meta.xml
 engine/version.h
+1ST_READ.BIN
+*.cdi

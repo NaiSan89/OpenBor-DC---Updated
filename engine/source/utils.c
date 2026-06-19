@@ -151,6 +151,10 @@ FILE *scriptLog = NULL;
 char debug_msg[2048];
 u32 debug_time = 0;
 
+#if XBOX || DC
+s_filelist paklist[20];
+#endif
+
 void getBasePath(char *newName, char *name, int type)
 {
 #ifndef DC
