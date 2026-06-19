@@ -69,7 +69,12 @@
 #define		THINK_SPEED			2
 #define		COUNTER_SPEED		(GAME_SPEED*2)
 #define		MAX_NAME_LEN		47
+#ifdef DC
+// Keep the idle pool smaller; alloc_ents() grows it automatically when needed.
+#define		MAX_ENTS			75
+#else
 #define		MAX_ENTS			150
+#endif
 #define		MAX_SPECIALS		8					// Added for customizable freespecials
 #define     MAX_SPECIAL_INPUTS  27                  // max freespecial input steps, MAX_SPECIAL_INPUTS-1 is reserved, MAX_SPECIAL_INPUTS-2 is animation index, MAX_SPECIAL_INPUTS-3 is reserved. OX -4 , -5 , -6 , -7 , -8 , -9 , -10 also for cancels
 #define		MAX_ATCHAIN			12					// max attack chain length

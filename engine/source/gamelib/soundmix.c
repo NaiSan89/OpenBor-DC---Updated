@@ -66,7 +66,13 @@ Caution: move vorbis headers here otherwise the structs will
 #define		SB_BUFFER_SIZE_MASK	 0x7FFF
 #define		SB_WBUFFER_SIZE		 0x4000
 #define		SB_WBUFFER_SIZE_MASK 0x3FFF
+#ifdef DC
+// snd_stream requests at most 8 KiB of 16-bit output per callback,
+// requiring 16 KiB of 32-bit intermediate samples.
+#define		MIXBUF_SIZE		     0x4000
+#else
 #define		MIXBUF_SIZE		     SB_BUFFER_SIZE*8
+#endif
 #define		PREMIX_SIZE		     1024
 #define		MIX_BLOCK_SIZE		 32
 
@@ -1823,4 +1829,3 @@ u32 sound_getinterval()
 
     return msecs;
 }
-
