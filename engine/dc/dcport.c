@@ -15,6 +15,13 @@
 
 /////////////////////////////////////////////////////////////////////////////
 
+// OpenBOR uses its own GD-ROM reader and only needs KOS to provide IRQs, the
+// ISO9660 mount used by /cd, and the Dreamcast controller driver.  Avoid the
+// considerably broader INIT_DEFAULT set on retail/CD builds.
+KOS_INIT_FLAGS(INIT_IRQ | INIT_CDROM | INIT_CONTROLLER | INIT_NO_DCLOAD);
+
+/////////////////////////////////////////////////////////////////////////////
+
 char packfile[128] = {"bor.pak"};
 int cd_lba;
 

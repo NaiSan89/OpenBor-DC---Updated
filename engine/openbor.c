@@ -4334,17 +4334,60 @@ s_sprite *loadsprite2(char *filename, int *width, int *height)
 }
 
 
-// Added to conserve memory
+// Rebuild resources whose lifetime is tied to the current stage.  This is a
+// deliberately stronger cleanup than unload_level(): the latter honours each
+// model's unload flags, while this function drops every model, sprite and
+// sample payload before rebuilding the engine resources needed by the next
+// stage.
+//
+// Keep level order and engine-level script state intact here.  playgame() holds
+// pointers into levelsets while a game is running, so rebuilding level order at
+// this point would leave those pointers dangling.  Scripts owned by models are
+// intentionally rebuilt together with their models.
 void resourceCleanUp()
 {
-    freesprites();
+    char playernames[MAX_PLAYERS][MAX_NAME_LEN + 1];
+    int active[MAX_PLAYERS];
+    int i;
+
+    for(i = 0; i < MAX_PLAYERS; i++)
+    {
+        active[i] = player[i].lives > 0 && player[i].name[0];
+        if(active[i])
+        {
+            strncpy(playernames[i], player[i].name, MAX_NAME_LEN);
+            playernames[i][MAX_NAME_LEN] = 0;
+        }
+        else
+        {
+            playernames[i][0] = 0;
+        }
+    }
+
+    sound_stopall_sample();
+    sound_close_music();
+
+    // Models only contain sprite/sample handles.  Destroy their metadata
+    // before invalidating and rebuilding the global resource caches.
     free_models();
     free_modelcache();
+    global_model = -1;
+    freesprites();
+
     load_special_sounds();
-    load_script_setting();
     load_special_sprites();
-    load_levelorder();
     load_models();
+
+    // A selectable player may be a "know" entry instead of a model loaded at
+    // startup.  Preserve the selection across the cache rebuild so
+    // spawnplayer() can find it when the next stage starts.
+    for(i = 0; i < MAX_PLAYERS; i++)
+    {
+        if(active[i] && !findmodel(playernames[i]))
+        {
+            load_cached_model(playernames[i], "stage resource cleanup", 0);
+        }
+    }
 }
 
 void freesprites()
@@ -29360,6 +29403,13 @@ int playlevel(char *filename)
     sound_stopall_sample();
 
     unload_level();
+
+#ifdef DC
+    // Dreamcast only has 16 MiB of main RAM.  Drop the completed stage's
+    // resource caches and rebuild the small persistent set before returning to
+    // the campaign loop.
+    resourceCleanUp();
+#endif
 
     return (type == 2 && endgame != 2) || (player[0].lives > 0 || player[1].lives > 0 || player[2].lives > 0 || player[3].lives > 0); //4player
 }
