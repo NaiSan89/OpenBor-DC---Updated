@@ -41,6 +41,10 @@ Caution: move vorbis headers here otherwise the structs will
 */
 #ifdef DC
 #include <ivorbisfile.h>
+#include <arch/timer.h>
+#include <dc/sound/aica_comm.h>
+#include <dc/sound/sfxmgr.h>
+#include <dc/sound/sound.h>
 #elif TREMOR
 #include <tremor/ivorbisfile.h>
 #else
@@ -88,6 +92,9 @@ Caution: move vorbis headers here otherwise the structs will
 #define		MUSIC_BUF_SIZE		(16*1024)	// In samples
 #define		SOUND_MONO			1
 #define		SOUND_STEREO		2
+#define     FMT_PCM                    0x0001
+#define     FMT_YAMAHA_ADPCM_ITU_G723 0x0014
+#define     FMT_YAMAHA_ADPCM          0x0020
 
 #ifndef DC
 #pragma pack(4)
@@ -104,15 +111,20 @@ typedef struct
     int            channels;
     unsigned int   fp_samplepos; // Position (fixed-point)
     unsigned int   fp_period;	 // Period (fixed-point)
+#ifdef DC
+    int            aica_channel;
+    uint64_t       aica_started_at;
+#endif
 } channelstruct;
 
 typedef struct
 {
     void 		   *sampleptr;
     int			   soundlen;	 // Length in samples
-    int            bits;		 // 8/16 bit
+    int            bits;		 // 4/8/16 bit
     int            frequency;    // 11025 * 1,2,4
     int            channels;
+    int            format;
 } samplestruct;
 
 typedef struct
@@ -120,6 +132,10 @@ typedef struct
     samplestruct  sample;
     int index;
     char *filename;
+#ifdef DC
+    sfxhnd_t aica_handle;
+    unsigned int aica_last_used;
+#endif
 } s_soundcache;
 
 typedef struct
@@ -167,6 +183,300 @@ static u32 samplesplayed;
 // Records type of currently playing music: 0=ADPCM, 1=Vorbis
 static int music_type = 0;
 
+#ifdef DC
+
+#define AICA_SFX_MAX_SAMPLES 65534
+#define AICA_SFX_HEADROOM_SHIFT 1
+
+static unsigned int aica_cache_clock = 0;
+
+static int dc_scale_volume(int volume)
+{
+    /*
+     * The software mixer attenuates the final mix by MIXSHIFT before it is
+     * sent to the AICA.  Hardware SFX bypass that step, so preserve the same
+     * gain here instead of mapping MAXVOLUME to full scale.  Keep one more
+     * bit of headroom because the AICA mixes hardware effects independently
+     * of the streamed music and several effects commonly overlap.
+     */
+    return volume * 255 / (MAXVOLUME << (MIXSHIFT + AICA_SFX_HEADROOM_SHIFT));
+}
+
+static void dc_update_aica_channel(int channel, int volume, int pan)
+{
+    AICA_CMDSTR_CHANNEL(packet, cmd, aica_channel);
+
+    if(channel < 0)
+    {
+        return;
+    }
+
+    cmd->cmd = AICA_CMD_CHAN;
+    cmd->timestamp = 0;
+    cmd->size = AICA_CMDSTR_CHANNEL_SIZE;
+    cmd->cmd_id = channel;
+    aica_channel->cmd = AICA_CH_CMD_UPDATE | AICA_CH_UPDATE_SET_VOL | AICA_CH_UPDATE_SET_PAN;
+    aica_channel->vol = volume;
+    aica_channel->pan = pan;
+    snd_sh4_to_aica(packet, cmd->size);
+}
+
+static void dc_apply_channel_volume(int channel)
+{
+    int left, right, total, volume, pan;
+    channelstruct *vch;
+
+    if(channel < 0 || channel >= max_channels)
+    {
+        return;
+    }
+
+    vch = &vchannel[channel];
+    if(vch->aica_channel < 0)
+    {
+        return;
+    }
+
+    left = vch->paused ? 0 : vch->volume[0];
+    right = vch->paused ? 0 : vch->volume[1];
+    if(vch->channels == SOUND_STEREO)
+    {
+        snd_sh4_to_aica_stop();
+        dc_update_aica_channel(vch->aica_channel, dc_scale_volume(left), 0);
+        dc_update_aica_channel(vch->aica_channel + 1, dc_scale_volume(right), 255);
+        snd_sh4_to_aica_start();
+        return;
+    }
+
+    total = left + right;
+    volume = left > right ? left : right;
+    pan = total ? right * 255 / total : 128;
+    dc_update_aica_channel(vch->aica_channel, dc_scale_volume(volume), pan);
+}
+
+static void dc_release_aica_channel(int channel)
+{
+    channelstruct *vch;
+
+    if(channel < 0 || channel >= max_channels)
+    {
+        return;
+    }
+
+    vch = &vchannel[channel];
+    if(vch->aica_channel >= 0)
+    {
+        snd_sfx_stop(vch->aica_channel);
+        if(vch->channels == SOUND_STEREO)
+        {
+            snd_sfx_stop(vch->aica_channel + 1);
+        }
+        vch->aica_channel = -1;
+        vch->aica_started_at = 0;
+    }
+}
+
+static void dc_refresh_aica_channel(int channel)
+{
+    channelstruct *vch;
+
+    if(channel < 0 || channel >= max_channels)
+    {
+        return;
+    }
+
+    vch = &vchannel[channel];
+    if(vch->active && vch->aica_channel >= 0 &&
+            timer_ms_gettime64() - vch->aica_started_at >= 10 &&
+            !snd_is_playing(vch->aica_channel))
+    {
+        vch->active = 0;
+        vch->aica_channel = -1;
+        vch->aica_started_at = 0;
+    }
+}
+
+static void dc_claim_aica_channels(int owner, int first_channel, int channels)
+{
+    int i, old_first, old_last, new_last, hw_channel;
+
+    new_last = first_channel + channels - 1;
+    for(i = 0; i < max_channels; i++)
+    {
+        if(i == owner || vchannel[i].aica_channel < 0)
+        {
+            continue;
+        }
+
+        old_first = vchannel[i].aica_channel;
+        old_last = old_first + vchannel[i].channels - 1;
+        if(old_first > new_last || old_last < first_channel)
+        {
+            continue;
+        }
+
+        for(hw_channel = old_first; hw_channel <= old_last; hw_channel++)
+        {
+            if(hw_channel < first_channel || hw_channel > new_last)
+            {
+                snd_sfx_stop(hw_channel);
+            }
+        }
+        vchannel[i].active = 0;
+        vchannel[i].aica_channel = -1;
+        vchannel[i].aica_started_at = 0;
+    }
+}
+
+static int dc_sample_is_playing(int sample)
+{
+    int channel;
+
+    for(channel = 0; channel < max_channels; channel++)
+    {
+        dc_refresh_aica_channel(channel);
+        if(vchannel[channel].active && vchannel[channel].samplenum == sample)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int dc_evict_oldest_aica_sample(int except)
+{
+    int i, victim = -1;
+    unsigned int oldest = 0xFFFFFFFF;
+
+    for(i = 0; i < sound_cached; i++)
+    {
+        if(i == except || soundcache[i].aica_handle == SFXHND_INVALID || dc_sample_is_playing(i))
+        {
+            continue;
+        }
+        if(soundcache[i].aica_last_used < oldest)
+        {
+            oldest = soundcache[i].aica_last_used;
+            victim = i;
+        }
+    }
+
+    if(victim < 0)
+    {
+        return 0;
+    }
+
+    snd_sfx_unload(soundcache[victim].aica_handle);
+    soundcache[victim].aica_handle = SFXHND_INVALID;
+    soundcache[victim].aica_last_used = 0;
+    return 1;
+}
+
+static int dc_cache_sample_to_aica(s_soundcache *cache)
+{
+    unsigned char *source, *planar;
+    unsigned int bytes_per_sample, frames, channel_bytes, padded_bytes, upload_bytes, i;
+    sfxhnd_t handle;
+
+    if(!mixing_active || !cache || cache->aica_handle != SFXHND_INVALID || !cache->sample.sampleptr)
+    {
+        return cache && cache->aica_handle != SFXHND_INVALID;
+    }
+    if((cache->sample.bits != 4 && cache->sample.bits != 8 && cache->sample.bits != 16) ||
+            (cache->sample.channels != SOUND_MONO && cache->sample.channels != SOUND_STEREO))
+    {
+        return 0;
+    }
+
+    frames = cache->sample.soundlen / cache->sample.channels;
+    bytes_per_sample = cache->sample.bits == 4 ? 0 : cache->sample.bits / 8;
+    channel_bytes = cache->sample.bits == 4 ? (frames + 1) / 2 : frames * bytes_per_sample;
+    padded_bytes = (channel_bytes + 31) & ~31;
+    if(!frames || (cache->sample.bits == 4 ? padded_bytes * 2 : padded_bytes / bytes_per_sample) >
+            AICA_SFX_MAX_SAMPLES)
+    {
+        return 0;
+    }
+
+    upload_bytes = padded_bytes * cache->sample.channels;
+    planar = malloc(upload_bytes);
+    if(!planar)
+    {
+        return 0;
+    }
+    memset(planar, 0, upload_bytes);
+    source = cache->sample.sampleptr;
+
+    if(cache->sample.channels == SOUND_MONO)
+    {
+        if(cache->sample.bits == 8)
+        {
+            /* WAV PCM8 is unsigned; the AICA PCM8 format is signed. */
+            for(i = 0; i < channel_bytes; i++)
+            {
+                planar[i] = source[i] ^ 0x80;
+            }
+        }
+        else
+        {
+            memcpy(planar, source, channel_bytes);
+        }
+    }
+    else if(cache->sample.bits == 4)
+    {
+        if(cache->sample.format == FMT_YAMAHA_ADPCM_ITU_G723)
+        {
+            memcpy(planar, source, channel_bytes);
+            memcpy(planar + padded_bytes, source + channel_bytes, channel_bytes);
+        }
+        else
+        {
+            snd_adpcm_split((uint32_t *)source, (uint32_t *)planar,
+                            (uint32_t *)(planar + padded_bytes), channel_bytes * 2);
+        }
+    }
+    else if(cache->sample.bits == 8)
+    {
+        for(i = 0; i < frames; i++)
+        {
+            planar[i] = source[i * 2] ^ 0x80;
+            planar[padded_bytes + i] = source[i * 2 + 1] ^ 0x80;
+        }
+    }
+    else
+    {
+        short *source16 = (short *)source;
+        short *left = (short *)planar;
+        short *right = (short *)(planar + padded_bytes);
+        for(i = 0; i < frames; i++)
+        {
+            left[i] = source16[i * 2];
+            right[i] = source16[i * 2 + 1];
+        }
+    }
+
+    do
+    {
+        handle = snd_sfx_load_raw_buf((char *)planar, upload_bytes,
+                                      cache->sample.frequency, cache->sample.bits,
+                                      cache->sample.channels);
+    }
+    while(handle == SFXHND_INVALID && dc_evict_oldest_aica_sample(cache->index));
+    free(planar);
+    if(handle == SFXHND_INVALID)
+    {
+        return 0;
+    }
+
+    cache->aica_handle = handle;
+    cache->aica_last_used = ++aica_cache_clock;
+    free(cache->sample.sampleptr);
+    cache->sample.sampleptr = NULL;
+    return 1;
+}
+
+#endif
+
 //////////////////////////////// WAVE LOADER //////////////////////////////////
 
 #ifndef DC
@@ -183,7 +493,6 @@ static int music_type = 0;
 #define		HEX_WAVE	0x45564157
 #define		HEX_fmt		0x20746D66
 #define		HEX_data	0x61746164
-#define		FMT_PCM		0x0001
 
 static int loadwave(char *filename, char *packname, samplestruct *buf, unsigned int maxsize)
 {
@@ -270,7 +579,15 @@ static int loadwave(char *filename, char *packname, samplestruct *buf, unsigned 
         seekpackfile(handle, rifftag.size - sizeof(fmt), SEEK_CUR);
     }
 
-    if(fmt.format != FMT_PCM || (fmt.channels != 1 && fmt.channels != 2) || (fmt.samplebits != 8 && fmt.samplebits != 16))
+    if((fmt.channels != 1 && fmt.channels != 2) ||
+            (fmt.format == FMT_PCM && fmt.samplebits != 8 && fmt.samplebits != 16)
+#ifdef DC
+            || (fmt.format != FMT_PCM && fmt.format != FMT_YAMAHA_ADPCM_ITU_G723 &&
+                fmt.format != FMT_YAMAHA_ADPCM)
+#else
+            || fmt.format != FMT_PCM
+#endif
+      )
     {
         closepackfile(handle);
         return 0;
@@ -325,16 +642,19 @@ static int loadwave(char *filename, char *packname, samplestruct *buf, unsigned 
 
     closepackfile(handle);
 
-    buf->soundlen = maxsize / mulbytes;
-    buf->bits = fmt.samplebits;
+    buf->soundlen = fmt.format == FMT_PCM ? maxsize / mulbytes : maxsize * 2;
+    buf->bits = fmt.format == FMT_PCM ? fmt.samplebits : 4;
     buf->frequency = fmt.samplerate;
     buf->channels = fmt.channels;
+    buf->format = fmt.format;
 
     return maxsize;
 }
 
 int sound_reload_sample(int index)
 {
+    int loaded;
+
     if(!mixing_inited)
     {
         return 0;
@@ -343,10 +663,23 @@ int sound_reload_sample(int index)
     {
         return 0;
     }
+#ifdef DC
+    if(soundcache[index].aica_handle != SFXHND_INVALID)
+    {
+        return 1;
+    }
+#endif
     if(!soundcache[index].sample.sampleptr)
     {
         //printf("packfile: '%s'\n", packfile);
-        return loadwave(soundcache[index].filename, packfile, &(soundcache[index].sample), MAX_SOUND_LEN);
+        loaded = loadwave(soundcache[index].filename, packfile, &(soundcache[index].sample), MAX_SOUND_LEN);
+#ifdef DC
+        if(loaded)
+        {
+            dc_cache_sample_to_aica(&soundcache[index]);
+        }
+#endif
+        return loaded;
     }
     else
     {
@@ -371,7 +704,11 @@ int sound_load_sample(char *filename, char *packfilename, int iLog)
     if(List_FindByName(&samplelist, convcache))
     {
         cache = &soundcache[(size_t)List_Retrieve(&samplelist)];
-        if(!cache->sample.sampleptr)
+        if(!cache->sample.sampleptr
+#ifdef DC
+                && cache->aica_handle == SFXHND_INVALID
+#endif
+          )
         {
             if(!sound_reload_sample(cache->index) && iLog)
             {
@@ -392,11 +729,16 @@ int sound_load_sample(char *filename, char *packfilename, int iLog)
     }
 
     __realloc(soundcache, sound_cached);
+    memset(&soundcache[sound_cached], 0, sizeof(soundcache[sound_cached]));
     soundcache[sound_cached].sample = sample;
+    soundcache[sound_cached].index = sound_cached;
+#ifdef DC
+    soundcache[sound_cached].aica_handle = SFXHND_INVALID;
+    dc_cache_sample_to_aica(&soundcache[sound_cached]);
+#endif
 
     List_GotoLast(&samplelist);
     List_InsertAfter(&samplelist, (void *)(size_t)sound_cached, convcache);
-    soundcache[sound_cached].index = sound_cached;
     soundcache[sound_cached].filename = List_GetName(&samplelist);
 
     sound_cached++;
@@ -407,6 +749,8 @@ int sound_load_sample(char *filename, char *packfilename, int iLog)
 // Changed to conserve memory: added this function
 void sound_unload_sample(int index)
 {
+    int channel;
+
     if(!mixing_inited)
     {
         return;
@@ -415,12 +759,27 @@ void sound_unload_sample(int index)
     {
         return;
     }
+    for(channel = 0; channel < max_channels; channel++)
+    {
+        if(vchannel[channel].active && vchannel[channel].samplenum == index)
+        {
+            sound_stop_sample(channel);
+        }
+    }
+#ifdef DC
+    if(soundcache[index].aica_handle != SFXHND_INVALID)
+    {
+        snd_sfx_unload(soundcache[index].aica_handle);
+        soundcache[index].aica_handle = SFXHND_INVALID;
+        soundcache[index].aica_last_used = 0;
+    }
+#endif
     if(soundcache[index].sample.sampleptr != NULL)
     {
         free(soundcache[index].sample.sampleptr);
         soundcache[index].sample.sampleptr = NULL;
-        memset(&soundcache[index].sample, 0, sizeof(samplestruct));
     }
+    memset(&soundcache[index].sample, 0, sizeof(samplestruct));
 }
 
 void sound_unload_all_samples()
@@ -598,6 +957,13 @@ static void mixaudio(unsigned int todo)
         {
             unsigned modlen;
             snum = vchannel[chan].samplenum;
+#ifdef DC
+            if(soundcache[snum].aica_handle != SFXHND_INVALID)
+            {
+                dc_refresh_aica_channel(chan);
+                continue;
+            }
+#endif
             if(!soundcache[snum].sample.sampleptr)
             {
                 vchannel[chan].active = 0;
@@ -753,12 +1119,17 @@ void update_sample(unsigned char *buf, int size)
 
 // Speed in percents of normal.
 // Returns channel the sample is played on or -1 if not playing.
-int sound_play_sample(int samplenum, unsigned int priority, int lvolume, int rvolume, unsigned int speed)
+static int sound_play_sample_internal(int samplenum, unsigned int priority, int lvolume, int rvolume,
+                                      unsigned int speed, int looping)
 {
 
     int i;
     unsigned int prio_low;
     int channel;
+#ifdef DC
+    int aica_channel, total, volume, pan;
+    sfx_play_data_t play_data;
+#endif
 
     if(!mixing_inited)
     {
@@ -772,16 +1143,34 @@ int sound_play_sample(int samplenum, unsigned int priority, int lvolume, int rvo
     {
         speed = 100;
     }
-    if(!soundcache[samplenum].sample.sampleptr &&
+    if(!soundcache[samplenum].sample.sampleptr
+#ifdef DC
+            && soundcache[samplenum].aica_handle == SFXHND_INVALID
+#endif
+            &&
             !sound_reload_sample(samplenum))
     {
         return -1;
     }
+#ifdef DC
+    if(soundcache[samplenum].sample.sampleptr)
+    {
+        dc_cache_sample_to_aica(&soundcache[samplenum]);
+    }
+    if(soundcache[samplenum].sample.bits == 4 &&
+            soundcache[samplenum].aica_handle == SFXHND_INVALID)
+    {
+        return -1;
+    }
+#endif
 
     // Try to find unused SFX channel
     channel = -1;
     for(i = 0; i < max_channels; i++)
     {
+#ifdef DC
+        dc_refresh_aica_channel(i);
+#endif
         if(!vchannel[i].active)
         {
             channel = i;
@@ -822,6 +1211,11 @@ int sound_play_sample(int samplenum, unsigned int priority, int lvolume, int rvo
         rvolume = MAXVOLUME;
     }
 
+#ifdef DC
+    dc_release_aica_channel(channel);
+#endif
+    vchannel[channel].active = 0;
+
     vchannel[channel].samplenum = samplenum;
     // Prevent samples from being played at EXACT same point
     vchannel[channel].fp_samplepos = INT_TO_FIX((channel * 4) % soundcache[samplenum].sample.soundlen);
@@ -830,21 +1224,54 @@ int sound_play_sample(int samplenum, unsigned int priority, int lvolume, int rvo
     vchannel[channel].volume[1] = rvolume;
     vchannel[channel].priority = priority;
     vchannel[channel].channels = soundcache[samplenum].sample.channels;
-    vchannel[channel].active = CHANNEL_PLAYING;
+    vchannel[channel].active = looping ? CHANNEL_LOOPING : CHANNEL_PLAYING;
     vchannel[channel].paused = 0;
     vchannel[channel].playid = ++sample_play_id;
+#ifdef DC
+    vchannel[channel].aica_channel = -1;
+    if(soundcache[samplenum].aica_handle != SFXHND_INVALID)
+    {
+        soundcache[samplenum].aica_last_used = ++aica_cache_clock;
+        total = lvolume + rvolume;
+        volume = lvolume > rvolume ? lvolume : rvolume;
+        pan = total ? rvolume * 255 / total : 128;
+
+        memset(&play_data, 0, sizeof(play_data));
+        play_data.chn = -1;
+        play_data.idx = soundcache[samplenum].aica_handle;
+        play_data.vol = dc_scale_volume(volume);
+        play_data.pan = pan;
+        play_data.loop = looping;
+        play_data.freq = soundcache[samplenum].sample.frequency * speed / 100;
+        /* Do not play the 32-byte alignment padding uploaded to sound RAM. */
+        play_data.loopend = soundcache[samplenum].sample.soundlen /
+                            soundcache[samplenum].sample.channels;
+        aica_channel = snd_sfx_play_ex(&play_data);
+        if(aica_channel < 0)
+        {
+            vchannel[channel].active = 0;
+            return -1;
+        }
+
+        dc_claim_aica_channels(channel, aica_channel, soundcache[samplenum].sample.channels);
+        vchannel[channel].aica_channel = aica_channel;
+        vchannel[channel].aica_started_at = timer_ms_gettime64();
+        vchannel[channel].fp_samplepos = 0;
+        dc_apply_channel_volume(channel);
+    }
+#endif
 
     return channel;
 }
 
+int sound_play_sample(int samplenum, unsigned int priority, int lvolume, int rvolume, unsigned int speed)
+{
+    return sound_play_sample_internal(samplenum, priority, lvolume, rvolume, speed, 0);
+}
+
 int sound_loop_sample(int samplenum, unsigned int priority, int lvolume, int rvolume, unsigned int speed)
 {
-    int ch = sound_play_sample(samplenum, priority, lvolume, rvolume, speed);
-    if(ch >= 0)
-    {
-        vchannel[ch].active = CHANNEL_LOOPING;
-    }
-    return ch;
+    return sound_play_sample_internal(samplenum, priority, lvolume, rvolume, speed, 1);
 }
 
 int sound_query_channel(int playid)
@@ -852,6 +1279,9 @@ int sound_query_channel(int playid)
     int i;
     for(i = 0; i < max_channels; i++)
     {
+#ifdef DC
+        dc_refresh_aica_channel(i);
+#endif
         if(vchannel[i].playid == playid && vchannel[i].active)
         {
             return i;
@@ -866,6 +1296,9 @@ void sound_stop_sample(int channel)
     {
         return;
     }
+#ifdef DC
+    dc_release_aica_channel(channel);
+#endif
     vchannel[channel].active = 0;
 }
 
@@ -874,7 +1307,7 @@ void sound_stopall_sample()
     int channel;
     for(channel = 0; channel < max_channels; channel++)
     {
-        vchannel[channel].active = 0;
+        sound_stop_sample(channel);
     }
 }
 
@@ -884,6 +1317,12 @@ void sound_pause_sample(int toggle)
     for(channel = 0; channel < max_channels; channel++)
     {
         vchannel[channel].paused = toggle;
+#ifdef DC
+        if(vchannel[channel].active)
+        {
+            dc_apply_channel_volume(channel);
+        }
+#endif
     }
 }
 
@@ -911,6 +1350,12 @@ void sound_volume_sample(int channel, int lvolume, int rvolume)
     }
     vchannel[channel].volume[0] = lvolume;
     vchannel[channel].volume[1] = rvolume;
+#ifdef DC
+    if(vchannel[channel].active)
+    {
+        dc_apply_channel_volume(channel);
+    }
+#endif
 }
 
 int sound_getpos_sample(int channel)
@@ -919,6 +1364,13 @@ int sound_getpos_sample(int channel)
     {
         return 0;
     }
+#ifdef DC
+    dc_refresh_aica_channel(channel);
+    if(vchannel[channel].aica_channel >= 0)
+    {
+        return snd_get_pos(vchannel[channel].aica_channel);
+    }
+#endif
     return FIX_TO_INT(vchannel[channel].fp_samplepos);
 }
 
@@ -1803,6 +2255,9 @@ int sound_init(int channels)
     for(i = 0; i < max_channels; i++)
     {
         memset(&vchannel[i], 0, sizeof(channelstruct));
+#ifdef DC
+        vchannel[i].aica_channel = -1;
+#endif
     }
 
     mixing_active = 0;
