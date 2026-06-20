@@ -9,6 +9,7 @@ SOURCE_PATH="engine"
 VERSION_FILE="version.h"
 ELF_FILE="OpenBOR.elf"
 BIN_FILE="OpenBOR.bin"
+SCRAMBLED_FILE="1ST_READ.BIN"
 
 # Set the working directory
 cd "$SOURCE_PATH"
@@ -39,4 +40,5 @@ if [ -f "$SOURCE_PATH/$ELF_FILE" ]; then
   fi
   mv "$SOURCE_PATH/$ELF_FILE" "$OUTPUT_PATH"
   mv "$SOURCE_PATH/$BIN_FILE" "$OUTPUT_PATH"
+  mv "$SOURCE_PATH/$SCRAMBLED_FILE" "$OUTPUT_PATH"
 fi

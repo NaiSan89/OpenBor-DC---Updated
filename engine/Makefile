@@ -220,6 +220,7 @@ endif
 ifdef BUILD_DC
 TARGET 	        = $(VERSION_NAME).elf
 TARGET_FINAL    = $(VERSION_NAME).bin
+TARGET_SCRAMBLED = 1ST_READ.BIN
 TARGET_PLATFORM = DC
 BUILDING        = 1
 INCLUDES        = $(KOS_BASE)/../kos-ports/SDL/build/SDL-1.2.15/include \
@@ -710,7 +711,7 @@ endif
 #----------------------------------------------------------------------------------------------------
 
 ifdef BUILD_DC
-all : $(TARGET) $(TARGET_FINAL)
+all : $(TARGET) $(TARGET_FINAL) $(TARGET_SCRAMBLED)
 KOS_LOCAL_CFLAGS = -I$(KOS_BASE)/../kos-ports/include -ffast-math
 include $(KOS_BASE)/Makefile.rules
 %.o : %.c
@@ -729,9 +730,13 @@ $(TARGET) : $(OBJS)
 $(TARGET_FINAL) : $(TARGET)
 	@echo Creating $(TARGET_PLATFORM) Port: $(TARGET_FINAL)...
 	@$(KOS_OBJCOPY) -R .stack -O binary $(TARGET) $(TARGET_FINAL)
+
+$(TARGET_SCRAMBLED) : $(TARGET_FINAL)
+	@echo Scrambling $(TARGET_PLATFORM) Port: $(TARGET_SCRAMBLED)...
+	@$(KOS_BASE)/utils/scramble/scramble $(TARGET_FINAL) $(TARGET_SCRAMBLED)
 	@echo
 	@echo Completed $(TARGET_PLATFORM) Port!
-	@echo $(TARGET_FINAL) is now ready!
+	@echo $(TARGET_SCRAMBLED) is now ready!
 endif
 
 
@@ -831,7 +836,7 @@ clean-releases:
 clean:
 	@echo
 	@echo "Removing All $(TARGET_PLATFORM) Files..."
-	@rm -f $(TARGET) $(TARGET_FINAL) $(TARGET_MAP) PARAM.SFO linkmap $(OBJS)
+	@rm -f $(TARGET) $(TARGET_FINAL) $(TARGET_SCRAMBLED) $(TARGET_MAP) PARAM.SFO linkmap $(OBJS)
 	@echo Done!
 	@echo
 endif
@@ -845,4 +850,3 @@ version:
 	@echo
 	@echo "Copyright (c) 2004 - 2014 OpenBOR Team"
 	@echo "-------------------------------------------------------"
-

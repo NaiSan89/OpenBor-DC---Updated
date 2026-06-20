@@ -65,7 +65,9 @@ static const size_t USED_FLAG = (((size_t) 1) << ((sizeof(size_t) * 8) - 1));
 // cacheblocks must be 255 or less!
 //
 #define CACHEBLOCKSIZE (32768)
-#ifndef OPENDINGUX
+#if DC
+#define CACHEBLOCKS    (32)
+#elif !defined(OPENDINGUX)
 #define CACHEBLOCKS    (96)
 #else
 #define CACHEBLOCKS    (8)
@@ -1514,6 +1516,5 @@ int packfile_music_play(struct fileliststruct *filelist, FILE *bgmFile, int bgmL
 }
 
 #endif
-
 
 
