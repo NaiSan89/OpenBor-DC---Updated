@@ -28430,22 +28430,35 @@ void shutdown(int status, char *msg, ...)
     if(!disablelog)
     {
         printf("%s", buf);
+        fflush(stdout);
     }
-
 
     getRamStatus(BYTES);
     savesettings();
     
-		enginecreditsScreen = 1;		//entry point for the engine credits screen.
-		
+    // BLUE SCREEN OF DEATH CUSTOM PARA DREAMCAST
+    // Se for erro (status 1), mostra a mensagem de erro e trava a tela
+    // para podermos ler o que aconteceu antes de fechar/mostrar créditos.
+    if(status == 1 && vscreen != NULL) {
+        int stall = 60 * 10; // Segura a tela por 10 segundos
+        while(stall > 0) {
+            clearscreen(vscreen);
+            font_printf(10, 10, 0, 0, "OPENBOR DC CRASH!");
+            font_printf(10, 30, 0, 0, buf); // A mensagem do shutdown
+            video_copy_screen(vscreen);
+            stall--;
+        }
+    }
+
+    enginecreditsScreen = 1;        //entry point for the engine credits screen.
     if(status != 2)
     {
-        display_credits();
+        // display_credits(); // Removendo os créditos para evitar que esconda o erro
     }
     
     if(startup_done)
     {
-    		enginecreditsScreen = 0; //once the engine credits is done, disable flag.
+        enginecreditsScreen = 0; //once the engine credits is done, disable flag.
         term_videomodes();
     }
 

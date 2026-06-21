@@ -1,97 +1,71 @@
 /*
- * OpenBOR - http://www.LavaLit.com
- * -----------------------------------------------------------------------
- * Licensed under the BSD license, see LICENSE in OpenBOR root for details.
- *
- * Copyright (c) 2004 - 2011 OpenBOR Team
+ * OpenBOR - PVR Hardware Rendering
  */
 
-#include <SDL.h>
+#include <kos.h>
 #include "types.h"
 #include "video.h"
 #include "vga.h"
 #include "screen.h"
 #include "openbor.h"
 #include "filecache.h"
+#include "pvr_render.h"
 
-static SDL_Surface *screen = NULL;
-static SDL_Surface *surface = NULL;
-static SDL_Color colors[256];
 static int width=0, height=0, bpp=0, mode=0;
-
-static unsigned masks[4][4] = {{0x00000000,0x00000000,0x00000000,0x00000000},
-							   {0x0000001F,0x000007E0,0x0000F800,0x00000000},
-							   {0x000000FF,0x0000FF00,0x00FF0000,0x00000000},
-							   {0x000000FF,0x0000FF00,0x00FF0000,0x00000000}};
+static int pvr_video_initialized = 0;
 
 int video_set_mode(s_videomodes videomodes)
 {
+	dbglog(DBG_INFO, "[DC_VIDEO] video_set_mode called: %dx%d bpp=%d pvr_init=%d\n", videomodes.hRes, videomodes.vRes, videomodes.pixel, pvr_video_initialized);
 	bpp = videomodes.pixel;
 	width = videomodes.hRes;
 	height = videomodes.vRes;
 	if(videomodes.hRes==480) mode = 1;
-	if(screen) SDL_FreeSurface(screen);
-	screen = SDL_SetVideoMode(mode?640:width,mode?480:height,8*bpp,SDL_HWSURFACE|SDL_DOUBLEBUF|SDL_FULLSCREEN);
-	if(screen==NULL) return 0;
-	if(bpp>1)
-	{
-		if(surface) SDL_FreeSurface(surface);
-		surface = SDL_AllocSurface(SDL_SWSURFACE, videomodes.hRes, videomodes.vRes, 8*bpp, masks[bpp-1][0], masks[bpp-1][1], masks[bpp-1][2], masks[bpp-1][3]);
-		if(surface==NULL) return 0;
-	}
+
+    // Ignora chamadas com resolução inválida (ex: term_videomodes envia 0x0)
+    if (width <= 0 || height <= 0) return 1;
+	
+    if (!pvr_video_initialized) {
+        dbglog(DBG_INFO, "[DC_VIDEO] First init: vid_set_mode + pvr_render_init\n");
+        vid_set_mode(DM_320x240, PM_RGB565);
+        if (!pvr_render_init(width, height, bpp)) { dbglog(DBG_INFO, "[DC_VIDEO] pvr_render_init FAILED!\n"); return 0; }
+        pvr_video_initialized = 1;
+        dbglog(DBG_INFO, "[DC_VIDEO] First init DONE\n");
+    } else {
+        dbglog(DBG_INFO, "[DC_VIDEO] Subsequent call: clearing texture cache\n");
+        pvr_texture_cache_clear();
+        dbglog(DBG_INFO, "[DC_VIDEO] Cache cleared OK\n");
+    }
+	
 	video_clearscreen();
-	SDL_ShowCursor(SDL_DISABLE);
 	return 1;
 }
 
+extern unsigned char global_palette[768];
+
 int video_copy_screen(s_screen* src)
 {
-	unsigned char *sp;
-	char *dp;
-	int i, linew, slinew;
-	int w=width;
-	int h=height;
-	SDL_Surface* ds = bpp>1?surface:screen;
-
 	filecache_process();
 
-	// Copy to linear video ram
-	sp = (unsigned char*)src->data;
-	dp = ds->pixels;
+    pvr_draw_screen(src, bpp, global_palette);
+	
+    pvr_render_end_frame();
+    pvr_render_begin_frame();
 
-	linew = w*bpp;
-	slinew = src->width*bpp;
-
-	for(i=0; i<h; i++) {
-		memcpy(dp, sp, linew);
-		sp += slinew;
-		dp += ds->pitch;
-	}
-
-	SDL_Rect rect;
-	rect.x = mode?80:0; rect.y = mode?120:0;
-	rect.w = src->width; rect.h = src->height;
-	if(bpp>1) SDL_BlitSurface(surface, NULL, screen, &rect);
-	SDL_Flip(screen);
 	return 1;
 }
 
 void video_clearscreen()
 {
-	memset(screen->pixels, 0, screen->pitch*screen->h);
+	pvr_render_clear();
 }
+
+unsigned char global_palette[768];
 
 void vga_setpalette(unsigned char* palette)
 {
-	int i;
 	if(bpp>1) return;
-	for(i=0;i<256;i++){
-		colors[i].r=palette[0];
-		colors[i].g=palette[1];
-		colors[i].b=palette[2];
-		palette+=3;
-	}
-	SDL_SetColors(screen,colors,0,256);
+    memcpy(global_palette, palette, 768);
 }
 
 void video_fullscreen_flip()
@@ -100,5 +74,6 @@ void video_fullscreen_flip()
 
 void vga_vwait(void)
 {
+    // No-op seguro: sync é feito por pvr_wait_ready dentro de begin_frame
+    thd_pass();
 }
-

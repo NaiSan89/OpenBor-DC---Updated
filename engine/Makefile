@@ -436,7 +436,8 @@ GAME_CONSOLE    = dc/dcport.o                                                   
                   dc/timer.o                                                                        \
                   dc/sblaster.o                                                                     \
                   dc/control.o                                                                      \
-                  dc/video.o
+                  dc/video.o                                                                        \
+                  dc/pvr_render.o
 endif
 
 

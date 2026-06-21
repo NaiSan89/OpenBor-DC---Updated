@@ -575,6 +575,12 @@ void putsprite_ex(int x, int y, s_sprite *frame, s_screen *screen, s_drawmethod 
 {
     gfx_entry gfx;
 
+#ifdef DC
+    extern void pvr_draw_sprite(int x, int y, s_sprite *sprite, s_drawmethod *drawmethod);
+    pvr_draw_sprite(x, y, frame, drawmethod);
+    return;
+#endif
+
     if(!drawmethod->scalex || !drawmethod->scaley)
     {
         return;    // zero size
@@ -629,6 +635,12 @@ void putsprite_ex(int x, int y, s_sprite *frame, s_screen *screen, s_drawmethod 
 
 static void _putsprite(int x, int y, s_sprite *sprite, s_screen *screen, s_drawmethod *drawmethod)
 {
+#ifdef DC
+    extern void pvr_draw_sprite(int x, int y, s_sprite *sprite, s_drawmethod *drawmethod);
+    pvr_draw_sprite(x, y, sprite, drawmethod);
+    return;
+#endif
+
     if(!drawmethod || drawmethod->flag == 0)
     {
         goto plainsprite;

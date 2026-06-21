@@ -18,7 +18,7 @@
 // OpenBOR uses its own GD-ROM reader and only needs KOS to provide IRQs, the
 // ISO9660 mount used by /cd, and the Dreamcast controller driver.  Avoid the
 // considerably broader INIT_DEFAULT set on retail/CD builds.
-KOS_INIT_FLAGS(INIT_IRQ | INIT_CDROM | INIT_CONTROLLER | INIT_NO_DCLOAD);
+KOS_INIT_FLAGS(INIT_IRQ | INIT_CDROM | INIT_CONTROLLER);
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -47,14 +47,17 @@ void borExit(int reset)
 
 int main(int argc, char** argv)
 {
+    printf("--> dcport main() started\n");
 	setSystemRam();
 	getRamStatus(BYTES);
 	packfile_mode(0);
+    printf("--> gdrom_init() chamando\n");
 	if((cd_lba = gdrom_init()) <= 0)
 	{
 		printf("gdrom_init failed\n");
 		arch_reboot();
 	}
+    printf("--> gdrom_init() sucesso, lba: %d\n", cd_lba);
 	openborMain(argc, argv);
 	return 0;
 }
