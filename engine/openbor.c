@@ -29404,10 +29404,11 @@ int playlevel(char *filename)
 
     unload_level();
 
-#ifdef DC
-    // Dreamcast only has 16 MiB of main RAM.  Drop the completed stage's
-    // resource caches and rebuild the small persistent set before returning to
-    // the campaign loop.
+#ifdef DC_STAGE_RESOURCE_CLEANUP
+    // Experimental: rebuilding the global model/sprite/sample caches between
+    // stages can save RAM, but some modules keep references that survive
+    // unload_level().  Keep it opt-in until the cache ownership rules are
+    // audited more thoroughly.
     resourceCleanUp();
 #endif
 
